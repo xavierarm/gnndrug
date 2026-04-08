@@ -1,8 +1,8 @@
-# GNN vs Fingerprint: EGFR Virtual Screening
+# GNN vs Fingerprint: Do Graph Neural Networks Generalize Better to Novel Chemical Scaffolds?
 
-> **"GNN이 분자의 그래프 구조를 직접 학습하면, fingerprint 기반 모델보다 새로운 화학 골격(scaffold)에 대해 더 잘 일반화할 수 있는가?"**
+> **Can GNNs, by learning directly from molecular graph structure, outperform fixed fingerprint representations when predicting activity for chemically novel compounds?**
 
-**결론: 아니오.** ECFP+Random Forest(ROC-AUC 0.820)가 scaffold split에서 모든 GNN 변형(0.750~0.807)을 이겼다. 이 문서는 그 이유를 분석한다.
+**Answer: No.** ECFP+Random Forest (ROC-AUC 0.819 +/- 0.001) consistently outperforms all GNN variants (0.780-0.799) on scaffold split. This repository documents the evidence and explains why.
 
 ---
 
@@ -10,121 +10,149 @@
 
 | | |
 |---|---|
-| Target | EGFR (CHEMBL203) — 비소세포폐암 핵심 타깃 |
+| Target | EGFR (CHEMBL203) — key oncology target (NSCLC) |
 | Source | ChEMBL REST API, IC50 (exact, nM) |
-| Molecules | 10,334 (정제 후) |
-| Active (pIC50 >= 7.0) | 5,266 (51%) |
-| Unique scaffolds | 3,755 |
+| Molecules | 10,334 (after cleaning) |
+| Active (pIC50 >= 7.0, IC50 <= 100 nM) | 5,266 (51%) |
+| Unique Murcko scaffolds | 3,755 |
 | Split | Train 80% / Valid 10% / Test 10% |
+| Known drugs included | Erlotinib, gefitinib, afatinib, osimertinib |
+
+**Scaffold split details:** Train/test scaffold overlap = 0. However, 47.2% of test molecules have Tanimoto >= 0.7 to at least one training molecule (mean max Tanimoto = 0.635). This means the scaffold split is not as harsh as it could be — different scaffolds do not always mean different structures.
 
 ---
 
-## Results: Scaffold Split
+## Main Results (Scaffold Split, 3 seeds)
 
-Scaffold split은 test set에 training 때 한 번도 본 적 없는 화학 골격만 남긴다. 실전 virtual screening과 가장 가까운 평가.
+All results are mean +/- standard deviation across 3 random seeds (42, 123, 456).
 
-### Baseline vs GNN
+| Model | ROC-AUC | PR-AUC |
+|-------|---------|--------|
+| **ECFP+RF** | **0.819 +/- 0.001** | **0.770 +/- 0.001** |
+| ECFP+XGB | 0.814 +/- 0.002 | 0.766 +/- 0.007 |
+| GCN-256 | 0.799 +/- 0.010 | 0.718 +/- 0.019 |
+| AttentiveFP | 0.780 +/- 0.003 | 0.694 +/- 0.008 |
 
-| Model | ROC-AUC | PR-AUC | EF1% | EF5% |
-|-------|---------|--------|------|------|
-| **ECFP+RF** | **0.820** | **0.773** | **2.57** | **2.47** |
-| ECFP+XGB | 0.805 | 0.749 | 2.31 | 2.41 |
-| ECFP+MLP | 0.783 | 0.696 | 2.31 | 2.16 |
-| GCN (h=128) | 0.788 | 0.729 | 2.31 | 2.41 |
-| GIN (h=128) | 0.778 | 0.722 | 2.31 | 2.47 |
-| D-MPNN (h=128) | 0.787 | 0.709 | 1.80 | 2.36 |
+Key observations:
+- **ECFP+RF is remarkably stable** (std = 0.001). The fixed hash representation leaves no room for seed-dependent variation.
+- **GCN-256 has the highest variance** (std = 0.010). Learned representations are sensitive to initialization, making single-seed comparisons unreliable.
+- **The gap is real**: even the best GCN-256 run (0.813) falls short of the worst ECFP+RF run (0.818).
 
-### Ablation Study
+### Ablation Study (single seed=42)
 
-| Model | ROC-AUC | Delta | What it tests |
-|-------|---------|-------|---------------|
-| GCN-256 | 0.807 | +0.019 | Capacity (128->256) |
-| GCN-256-vn | 0.792 | +0.004 | Virtual node |
+| Model | ROC-AUC | Delta vs GCN-128 | What it tests |
+|-------|---------|-------------------|---------------|
+| GCN-256 | 0.807 | +0.019 | Hidden dim 128 -> 256 |
+| GCN-256-vn | 0.792 | +0.004 | + Virtual node |
 | AttentiveFP | 0.782 | -0.006 | Attention architecture |
-| GCN-256-reg | 0.780 | -0.008 | Regression task |
+| GCN-256-reg | 0.780 | -0.008 | Regression (MSELoss on pIC50) |
 | AttFP-reg-vn | 0.750 | -0.038 | All combined |
 
-### Random Split (참고)
-
-| Model | ROC-AUC |
-|-------|---------|
-| AttentiveFP | 0.919 |
-| ECFP+XGB | 0.918 |
-| D-MPNN | 0.912 |
-| GCN-256-reg | 0.911 |
-| ECFP+RF | 0.914 |
-
-Random split에서는 모든 모델이 ~0.91로 비슷하다. 차이는 scaffold split에서만 나타난다.
+**Increasing hidden dim was the only consistently helpful change.** Everything else either didn't help or actively hurt performance.
 
 ---
 
-## Analysis
+## Why Regression Hurts
 
-### Enrichment Curves
+![Regression Threshold Analysis](figures/regression_threshold_analysis.png)
+
+The intuition that "learning continuous pIC50 values provides richer supervision" is wrong for this task. The data shows why:
+
+- **Classification**: Only 15.7% of test predictions fall in the ambiguous zone (sigmoid output 0.3-0.7). The model learns a sharp decision boundary.
+- **Regression**: 61.9% of predictions fall near the threshold (pIC50 6.0-8.0). The model spreads its capacity across the entire pIC50 range instead of focusing on the active/inactive boundary.
+
+Classification concentrates learning on the decision that matters. Regression dilutes it.
+
+---
+
+## Performance Degrades with Distance
+
+| Max Tanimoto to training set | n | Active% | ECFP+RF | GCN-256 | Delta |
+|------------------------------|---|---------|---------|---------|-------|
+| [0.0, 0.3) — truly novel | 84 | 17.9% | 0.513 | 0.559 | +0.045 |
+| [0.3, 0.5) — distant | 173 | 22.5% | 0.477 | 0.539 | +0.063 |
+| [0.5, 0.7) — moderate | 289 | 33.6% | 0.816 | 0.835 | +0.020 |
+| [0.7, 1.0) — similar | 488 | 51.6% | 0.861 | 0.845 | -0.016 |
+
+This is the most important table in the project:
+
+1. **Both models collapse below Tanimoto 0.5.** At Tanimoto < 0.3 (84 molecules), both ECFP+RF (0.513) and GCN-256 (0.559) are near random. No amount of graph learning helps when the test molecule is structurally alien.
+
+2. **GNN shows a small advantage in the "distant" zone (0.3-0.5).** Delta = +0.063. This is the one regime where graph-level learning might add value — but the sample size (n=173) is small and the AUCs are still poor (< 0.54).
+
+3. **ECFP+RF wins in the "similar" zone (0.7-1.0).** Where it matters most (488 molecules, 47% of test set), the fixed hash beats the learned representation.
+
+The claim that "GNNs generalize better to novel scaffolds" finds no support here. Both approaches degrade at the same rate.
+
+---
+
+## Enrichment: What This Means in Practice
 
 ![Enrichment Curves](figures/enrichment_curves.png)
 
-상위 x%를 뽑았을 때 active 비율. 곡선이 높을수록 virtual screening에 실용적.
+ECFP+RF achieves EF1% = 2.57 on scaffold split. In practical terms:
 
-### Distance vs Performance
+> **In a 10,000-compound screening library with ~39% hit rate, screening only the top 100 compounds (1%) selected by ECFP+RF yields ~100 actives — compared to ~39 by random selection.** That's 2.6x more efficient than random, saving significant experimental cost.
 
-![Distance vs Performance](figures/distance_vs_performance.png)
-
-Test 분자가 training set과 멀어질수록(Tanimoto 낮아질수록) 성능이 떨어지는 패턴. ECFP+RF와 GCN-256 모두 비슷한 감쇠를 보인다.
-
-### Uncertainty (MC Dropout)
-
-![Confidence vs Performance](figures/confidence_vs_performance.png)
-
-GCN-256이 확신하는 분자(표준편차가 낮은)만 평가하면 AUC가 올라가는지. 모델이 자기 한계를 아는지 확인.
+The enrichment curves show ECFP+RF and GCN-256 perform comparably in the top 5-10%, with ECFP+RF slightly ahead.
 
 ---
 
-## Why ECFP Wins
+## Uncertainty (MC Dropout)
 
-### 1. Fixed Hash vs Learned Representation
+![Confidence vs Performance](figures/confidence_vs_performance.png)
 
-ECFP는 각 원자 환경을 **고정 해시 함수**로 2048-bit 벡터에 매핑한다. 이 과정이 GNN의 message passing과 구조적으로 동일하지만, 결정적 차이가 있다:
+GCN-256 with MC Dropout (30 forward passes) shows that filtering to the model's most confident predictions improves AUC. This suggests the model has some awareness of its own limitations — practically useful for prioritizing which predictions to trust.
 
-- **ECFP**: 학습 데이터에 의존하지 않는 표현. 새로운 substructure가 와도 새로운 비트가 켜질 뿐, 기존 표현이 무너지지 않음
-- **GNN**: Weight가 training 분포에 최적화됨. 새로운 scaffold는 학습한 패턴과 다른 입력을 만들어 부적절한 변환 유발
+---
 
-이것이 random split(같은 분포)에서는 비슷하고, scaffold split(다른 분포)에서 GNN이 떨어지는 이유.
+## Why ECFP Wins: Five Reasons
+
+### 1. Fixed Hash = Distribution-Invariant Representation
+
+ECFP hashes each atomic neighborhood into a 2048-bit vector using a fixed function. This process is structurally identical to GNN message passing, but with one critical difference: the hash doesn't depend on training data. A novel substructure simply activates a new bit without corrupting existing representations. GNN weights, optimized for training scaffolds, produce inappropriate transformations for unseen scaffolds.
 
 ### 2. 2048 vs 256 Dimensions
 
-ECFP: 2048개의 **독립적 substructure detector**. XGBoost/RF가 관련 비트만 선택.
-GCN-256: 분자의 모든 정보를 **256차원에 압축**. 정보 손실 불가피.
-
-Hidden dim을 128->256으로 올렸을 때 즉시 +0.019 개선(0.788->0.807)이 이를 증명한다.
+ECFP provides 2048 independent substructure detectors. Random Forest selects the relevant ones. GCN-256 compresses all molecular information into 256 dense dimensions — information loss is inevitable. The immediate +0.019 gain from increasing hidden dim 128->256 confirms this bottleneck.
 
 ### 3. Expressiveness-Generalization Tradeoff
 
-AttentiveFP가 random split에서 **전체 최고**(0.919)지만 scaffold split에서는 0.782로 하락. Attention이 training scaffold의 패턴에 과적합되어, 새로운 scaffold에서 엉뚱한 곳에 주의를 기울인다.
+AttentiveFP achieves the highest random-split ROC-AUC (0.919) but drops to 0.780 on scaffold split. The attention mechanism memorizes which atoms matter for training scaffolds, then attends to the wrong features on novel scaffolds. Higher expressiveness = better in-distribution performance but worse out-of-distribution.
 
-표현력이 높을수록 같은 분포에서는 강하지만, 분포가 바뀌면 더 취약해진다.
+### 4. Regression Dilutes the Decision Boundary
 
-### 4. Regression Hurts
+As shown above, regression pushes 61.9% of predictions into the ambiguous zone around the activity threshold, versus 15.7% for classification. The model wastes capacity predicting the difference between pIC50=4.0 and pIC50=5.5 — both inactive, both irrelevant to the decision.
 
-직관: 연속값(pIC50)을 학습하면 더 풍부한 정보를 쓸 수 있다.
-현실: MSE loss가 전체 pIC50 범위를 맞추려 하면서, threshold(7.0) 근처의 decision boundary가 약해진다. Classification은 바로 그 경계에 집중하기 때문에 더 효율적.
+### 5. Combining "Improvements" Compounds Uncertainty
 
-### 5. Combining Everything Makes It Worse
+Each modification (regression, virtual node, attention) adds a small amount of model uncertainty. These uncertainties compound multiplicatively. More complex models need more data and regularization; 10k molecules cannot support it.
 
-각 "개선"이 약간의 불확실성을 추가하고, 이것이 곱셈적으로 누적된다. 복잡한 모델일수록 더 많은 데이터와 regularization이 필요한데, 10k molecules로는 부족하다.
+---
+
+## Scaffold Split Leakage Analysis
+
+A scaffold split guarantees no scaffold overlap between train and test. But **scaffold != structure**. Our analysis shows:
+
+| Metric | Value |
+|--------|-------|
+| Test molecules with Tanimoto >= 0.7 to any train molecule | 488 / 1,034 (47.2%) |
+| Test molecules with Tanimoto >= 0.5 | 777 / 1,034 (75.1%) |
+| Mean max Tanimoto (test to train) | 0.635 |
+| Median max Tanimoto | 0.683 |
+
+Nearly half of "novel scaffold" test molecules are structurally very similar to training molecules (Tanimoto >= 0.7). This means ECFP+RF's 0.819 AUC is partly driven by structural similarity despite scaffold novelty. The true out-of-distribution performance (Tanimoto < 0.3) is ~0.51 for both models — essentially random.
 
 ---
 
 ## Key Takeaway
 
-> ECFP는 **데이터에 무관한 고정 표현**이기 때문에 distribution shift에 강하고, GNN은 **데이터에 최적화된 학습 표현**이기 때문에 같은 분포에서는 강하지만 새로운 분포에서 약해진다.
+> ECFP is a **data-independent fixed representation** that is robust to distribution shift. GNN is a **data-optimized learned representation** that excels in-distribution but degrades under shift. On scaffold-split EGFR with 10k molecules, the fixed representation wins.
 
-이것은 "GNN이 나쁘다"가 아니라, **"언제 GNN을 쓰고 언제 fingerprint를 써야 하는가"** 에 대한 정직한 답이다.
-
-GNN이 ECFP를 이기려면:
-- 훨씬 큰 데이터셋 (100k+)
-- Pre-training (self-supervised on large molecular corpus)
-- 또는 ECFP와 GNN의 앙상블
+This is not "GNNs are bad." It's an honest answer to **"when should you use GNNs vs fingerprints."** GNNs may outperform ECFP with:
+- Much larger datasets (100k+)
+- Pre-training on large molecular corpora
+- Ensemble with ECFP (complementary representations)
 
 ---
 
@@ -134,44 +162,46 @@ GNN이 ECFP를 이기려면:
 # Environment
 conda create -n drug_discovery python=3.10
 conda activate drug_discovery
-pip install torch torchvision torchaudio
-pip install torch-geometric rdkit chembl_webresource_client
-pip install xgboost scikit-learn pandas numpy matplotlib seaborn
+pip install -r requirements.txt
 brew install libomp  # macOS only, for XGBoost
 
-# Run pipeline
-python src/data_pipeline.py    # Fetch & clean EGFR data from ChEMBL
-python src/split.py            # Generate random + scaffold splits
-python src/features.py         # Generate ECFP + molecular graphs
+# Pipeline
+python src/data_pipeline.py          # Fetch EGFR IC50 data from ChEMBL
+python src/split.py                  # Random + scaffold splits
+python src/features.py               # ECFP fingerprints + molecular graphs
 
 # Train & evaluate
-OMP_NUM_THREADS=1 python src/baseline.py   # ECFP + XGB/RF/MLP
-OMP_NUM_THREADS=1 python src/gnn.py        # GCN/GIN/D-MPNN (GPU recommended)
-OMP_NUM_THREADS=1 python src/gnn_v2.py     # Ablation study (GPU recommended)
+OMP_NUM_THREADS=1 python src/baseline.py    # ECFP + XGBoost/RF/MLP
+python src/gnn.py                           # GCN/GIN/D-MPNN (GPU recommended)
+python src/gnn_v2.py                        # Ablation study (GPU recommended)
 
 # Analysis
-OMP_NUM_THREADS=1 python src/analysis.py   # Screening + Error + Uncertainty
+OMP_NUM_THREADS=1 python src/analysis.py    # Screening + Error + Uncertainty
+python src/analysis_v2.py                   # Leakage + Regression analysis
+python src/multiseed.py                     # 3-seed validation (GPU recommended)
 ```
-
----
 
 ## Project Structure
 
 ```
 gnndrug/
 ├── src/
-│   ├── data_pipeline.py     # ChEMBL API -> cleaned CSV
-│   ├── split.py             # Random + scaffold splits
-│   ├── features.py          # ECFP fingerprints + PyG graphs
-│   ├── baseline.py          # ECFP + XGBoost / RF / MLP
-│   ├── gnn.py               # GCN / GIN / D-MPNN
-│   ├── gnn_v2.py            # Ablation: h=256, regression, virtual node, AttentiveFP
-│   └── analysis.py          # Screening + Error + Uncertainty analysis
+│   ├── utils.py              # Shared metrics, training loop, model definitions
+│   ├── data_pipeline.py      # ChEMBL API -> cleaned CSV
+│   ├── split.py              # Random + scaffold splits
+│   ├── features.py           # ECFP fingerprints + PyG molecular graphs
+│   ├── baseline.py           # ECFP + XGBoost / RF / MLP
+│   ├── gnn.py                # GCN / GIN / D-MPNN
+│   ├── gnn_v2.py             # Ablation: hidden dim, regression, virtual node, AttentiveFP
+│   ├── analysis.py           # Screening + Error + Uncertainty analysis
+│   ├── analysis_v2.py        # Leakage quantification + regression threshold analysis
+│   └── multiseed.py          # Multi-seed validation (3 seeds x 4 models)
 ├── data/
-│   ├── processed/           # egfr_cleaned.csv (10,334 molecules)
-│   ├── splits/              # {random,scaffold}_{train,valid,test}.npy
-│   └── features/            # ecfp_2048.npy, graphs.pt
-├── results/                 # Performance CSVs + error_analysis.md
-├── figures/                 # Enrichment, distance, confidence plots
-└── docs/guide.md            # Detailed implementation guide (Korean)
+│   ├── processed/            # egfr_cleaned.csv (10,334 molecules)
+│   ├── splits/               # {random,scaffold}_{train,valid,test}.npy
+│   └── features/             # ecfp_2048.npy, graphs.pt
+├── results/                  # Performance CSVs + error_analysis.md
+├── figures/                  # All analysis plots
+├── requirements.txt          # Pinned package versions
+└── docs/guide.md             # Detailed implementation guide (Korean)
 ```
