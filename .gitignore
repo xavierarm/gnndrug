@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+data/raw/
+data/features/graphs.pt
+data/features/ecfp_2048.npy
+*.pt
+.DS_Store
