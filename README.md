@@ -16,7 +16,9 @@
 | Active (pIC50 >= 7.0, IC50 <= 100 nM) | 5,266 (51%) |
 | Unique Murcko scaffolds | 3,755 |
 | Split | Train 80% / Valid 10% / Test 10% |
-| Known drugs included | Erlotinib, gefitinib, afatinib, osimertinib |
+
+
+**Known EGFR drugs in training set:** Erlotinib (pIC50=7.52), gefitinib (7.65), osimertinib (7.92), lapatinib (7.85) — all correctly labeled active and assigned to the training set by scaffold split. Afatinib was excluded during data cleaning (no exact IC50 value). These drugs serve as sanity checks: all models correctly predict high activity for these well-characterized inhibitors when evaluated on training data.
 
 **Scaffold split details:** Train/test scaffold overlap = 0. However, 47.2% of test molecules have Tanimoto >= 0.7 to at least one training molecule (mean max Tanimoto = 0.635). This means the scaffold split is not as harsh as it could be — different scaffolds do not always mean different structures.
 
@@ -78,7 +80,7 @@ This is the most important table in the project:
 
 1. **Both models collapse below Tanimoto 0.5.** At Tanimoto < 0.3 (84 molecules), both ECFP+RF (0.513) and GCN-256 (0.559) are near random. No amount of graph learning helps when the test molecule is structurally alien.
 
-2. **GNN shows a small advantage in the "distant" zone (0.3-0.5).** Delta = +0.063. This is the one regime where graph-level learning might add value — but the sample size (n=173) is small and the AUCs are still poor (< 0.54).
+2. **GNN shows a small advantage in the "distant" zone (0.3-0.5).** Delta = +0.063. This is the one regime where graph-level learning might add value — but the sample size (n=173) is small, this difference has not been statistically tested, and both AUCs are still poor (< 0.54).
 
 3. **ECFP+RF wins in the "similar" zone (0.7-1.0).** Where it matters most (488 molecules, 47% of test set), the fixed hash beats the learned representation.
 
